@@ -124,7 +124,7 @@ class ModelTrainer:
                 if learning_rate != previous_learning_rate and anneal_with_restarts and \
                         (base_path / 'best-model.pt').exists():
                     log.info('resetting to best model')
-                    self.model.load_from_file(base_path / 'best-model.pt')
+                    self.model.load(base_path / 'best-model.pt')
 
                 previous_learning_rate = learning_rate
 
@@ -270,9 +270,9 @@ class ModelTrainer:
 
         if (base_path / 'best-model.pt').exists():
             if isinstance(self.model, TextClassifier):
-                self.model = TextClassifier.load_from_file(base_path / 'best-model.pt')
+                self.model = TextClassifier.load(base_path / 'best-model.pt')
             if isinstance(self.model, SequenceTagger):
-                self.model = SequenceTagger.load_from_file(base_path / 'best-model.pt')
+                self.model = SequenceTagger.load(base_path / 'best-model.pt')
 
         test_metric, test_loss = self.evaluate(self.model, self.corpus.test, eval_mini_batch_size=eval_mini_batch_size,
                                                embeddings_in_memory=embeddings_in_memory)
@@ -476,19 +476,10 @@ class ModelTrainer:
 
     @staticmethod
     def load_from_checkpoint(checkpoint_file: Path, model_type: str, corpus: Corpus, optimizer: Optimizer = SGD):
-        if model_type == 'SequenceTagger':
-            checkpoint = SequenceTagger.load_checkpoint(checkpoint_file)
-            return ModelTrainer(checkpoint['model'], corpus, optimizer, epoch=checkpoint['epoch'],
-                                loss=checkpoint['loss'], optimizer_state=checkpoint['optimizer_state_dict'],
-                                scheduler_state=checkpoint['scheduler_state_dict'])
-
-        if model_type == 'TextClassifier':
-            checkpoint = TextClassifier.load_checkpoint(checkpoint_file)
-            return ModelTrainer(checkpoint['model'], corpus, optimizer, epoch=checkpoint['epoch'],
-                                loss=checkpoint['loss'], optimizer_state=checkpoint['optimizer_state_dict'],
-                                scheduler_state=checkpoint['scheduler_state_dict'])
-
-        raise ValueError('Incorrect model type! Use one of the following: "SequenceTagger", "TextClassifier".')
+        checkpoint = SequenceTagger.load_checkpoint(checkpoint_file)
+        return ModelTrainer(checkpoint['model'], corpus, optimizer, epoch=checkpoint['epoch'],
+                            loss=checkpoint['loss'], optimizer_state=checkpoint['optimizer_state_dict'],
+                            scheduler_state=checkpoint['scheduler_state_dict'])
 
     def find_learning_rate(self,
                            base_path: Union[Path, str],

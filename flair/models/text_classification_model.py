@@ -62,83 +62,25 @@ class TextClassifier(flair.nn.Model):
 
         return label_scores
 
-    def save(self, model_file: Union[str, Path]):
-        """
-        Saves the current model to the provided file.
-        :param model_file: the model file
-        """
+    def _get_state_dict(self):
         model_state = {
             'state_dict': self.state_dict(),
             'document_embeddings': self.document_embeddings,
             'label_dictionary': self.label_dictionary,
             'multi_label': self.multi_label,
         }
-        torch.save(model_state, str(model_file), pickle_protocol=4)
+        return model_state
 
-    def save_checkpoint(self, model_file: Union[str, Path], optimizer_state: dict, scheduler_state: dict, epoch: int, loss: float):
-        """
-        Saves the current model to the provided file.
-        :param model_file: the model file
-        """
-        model_state = {
-            'state_dict': self.state_dict(),
-            'document_embeddings': self.document_embeddings,
-            'label_dictionary': self.label_dictionary,
-            'multi_label': self.multi_label,
-            'optimizer_state_dict': optimizer_state,
-            'scheduler_state_dict': scheduler_state,
-            'epoch': epoch,
-            'loss': loss
-        }
-        torch.save(model_state, str(model_file), pickle_protocol=4)
-
-    @classmethod
-    def load_from_file(cls, model_file: Union[str, Path]):
-        """
-        Loads the model from the given file.
-        :param model_file: the model file
-        :return: the loaded text classifier model
-        """
-        state = TextClassifier._load_state(model_file)
+    def _init_model_with_state_dict(state):
 
         model = TextClassifier(
             document_embeddings=state['document_embeddings'],
             label_dictionary=state['label_dictionary'],
             multi_label=state['multi_label']
         )
+
         model.load_state_dict(state['state_dict'])
-        model.eval()
-        model.to(flair.device)
-
         return model
-
-    @classmethod
-    def load_checkpoint(cls, model_file: Union[str, Path]):
-        state = TextClassifier._load_state(model_file)
-        model = TextClassifier.load_from_file(model_file)
-
-        epoch = state['epoch'] if 'epoch' in state else None
-        loss = state['loss'] if 'loss' in state else None
-        optimizer_state_dict = state['optimizer_state_dict'] if 'optimizer_state_dict' in state else None
-        scheduler_state_dict = state['scheduler_state_dict'] if 'scheduler_state_dict' in state else None
-
-        return {
-            'model': model, 'epoch': epoch, 'loss': loss,
-            'optimizer_state_dict': optimizer_state_dict, 'scheduler_state_dict': scheduler_state_dict
-        }
-
-    @classmethod
-    def _load_state(cls, model_file: Union[str, Path]):
-        # ATTENTION: suppressing torch serialization warnings. This needs to be taken out once we sort out recursive
-        # serialization of torch objects
-        # https://docs.python.org/3/library/warnings.html#temporarily-suppressing-warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
-            # load_big_file is a workaround by https://github.com/highway11git to load models on some Mac/Windows setups
-            # see https://github.com/zalandoresearch/flair/issues/351
-            f = flair.file_utils.load_big_file(str(model_file))
-            state = torch.load(f, map_location=flair.device)
-            return state
 
     def forward_loss(self, sentences: Union[List[Sentence], Sentence]) -> torch.tensor:
         scores = self.forward(sentences)
@@ -250,20 +192,18 @@ class TextClassifier(flair.nn.Model):
 
         return vec
 
-    @staticmethod
-    def load(model: str):
-        model_file = None
+    def _fetch_model(model_name) -> str:
+
+        model_map = {}
         aws_resource_path = 'https://s3.eu-central-1.amazonaws.com/alan-nlp/resources/models-v0.4'
-        cache_dir = Path('models')
 
-        if model.lower() == 'de-offensive-language':
-            base_path = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_germ-eval-2018_task-1',
+        model_map['de-offensive-language'] = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_germ-eval-2018_task-1',
                                   'germ-eval-2018-task-1.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'en-sentiment':
-            base_path = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_imdb', 'imdb.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['en-sentiment'] = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_imdb', 'imdb.pt'])
 
-        if model_file is not None:
-            return TextClassifier.load_from_file(model_file)
+        cache_dir = Path('models')
+        if model_name in model_map:
+            model_name = cached_path(model_map[model_name], cache_dir=cache_dir)
+
+        return model_name

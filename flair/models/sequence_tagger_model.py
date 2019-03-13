@@ -19,7 +19,6 @@ from flair.training_utils import clear_embeddings
 
 from tqdm import tqdm
 
-
 log = logging.getLogger('flair')
 
 START_TAG: str = '<START>'
@@ -152,22 +151,7 @@ class SequenceTagger(flair.nn.Model):
 
         self.to(flair.device)
 
-    @staticmethod
-    def save_torch_model(model_state: dict, model_file: str, pickle_module: str = 'pickle', pickle_protocol: int = 4):
-        if pickle_module == 'dill':
-            try:
-                import dill
-                torch.save(model_state, str(model_file), pickle_module=dill)
-            except:
-                log.warning('-' * 100)
-                log.warning('ATTENTION! The library "dill" is not installed!')
-                log.warning('Please first install "dill" with "pip install dill" to save the model!')
-                log.warning('-' * 100)
-                pass
-        else:
-            torch.save(model_state, str(model_file), pickle_protocol=pickle_protocol)
-
-    def save(self, model_file: Union[str, Path]):
+    def _get_state_dict(self):
         model_state = {
             'state_dict': self.state_dict(),
             'embeddings': self.embeddings,
@@ -180,29 +164,28 @@ class SequenceTagger(flair.nn.Model):
             'use_word_dropout': self.use_word_dropout,
             'use_locked_dropout': self.use_locked_dropout,
         }
+        return model_state
 
-        self.save_torch_model(model_state, str(model_file), self.pickle_module)
+    def _init_model_with_state_dict(state):
 
-    def save_checkpoint(self, model_file: Union[str, Path], optimizer_state: dict, scheduler_state: dict, epoch: int,
-                        loss: float):
-        model_state = {
-            'state_dict': self.state_dict(),
-            'embeddings': self.embeddings,
-            'hidden_size': self.hidden_size,
-            'tag_dictionary': self.tag_dictionary,
-            'tag_type': self.tag_type,
-            'use_crf': self.use_crf,
-            'use_rnn': self.use_rnn,
-            'rnn_layers': self.rnn_layers,
-            'use_word_dropout': self.use_word_dropout,
-            'use_locked_dropout': self.use_locked_dropout,
-            'optimizer_state_dict': optimizer_state,
-            'scheduler_state_dict': scheduler_state,
-            'epoch': epoch,
-            'loss': loss
-        }
+        use_dropout = 0.0 if not 'use_dropout' in state.keys() else state['use_dropout']
+        use_word_dropout = 0.0 if not 'use_word_dropout' in state.keys() else state['use_word_dropout']
+        use_locked_dropout = 0.0 if not 'use_locked_dropout' in state.keys() else state['use_locked_dropout']
 
-        self.save_torch_model(model_state, str(model_file), self.pickle_module)
+        model = SequenceTagger(
+            hidden_size=state['hidden_size'],
+            embeddings=state['embeddings'],
+            tag_dictionary=state['tag_dictionary'],
+            tag_type=state['tag_type'],
+            use_crf=state['use_crf'],
+            use_rnn=state['use_rnn'],
+            rnn_layers=state['rnn_layers'],
+            dropout=use_dropout,
+            word_dropout=use_word_dropout,
+            locked_dropout=use_locked_dropout,
+        )
+        model.load_state_dict(state['state_dict'])
+        return model
 
     @classmethod
     def load_from_file(cls, model_file: Union[str, Path]):
@@ -229,34 +212,6 @@ class SequenceTagger(flair.nn.Model):
         model.to(flair.device)
 
         return model
-
-    @classmethod
-    def load_checkpoint(cls, model_file: Union[str, Path]):
-        state = SequenceTagger._load_state(model_file)
-        model = SequenceTagger.load_from_file(model_file)
-
-        epoch = state['epoch'] if 'epoch' in state else None
-        loss = state['loss'] if 'loss' in state else None
-        optimizer_state_dict = state['optimizer_state_dict'] if 'optimizer_state_dict' in state else None
-        scheduler_state_dict = state['scheduler_state_dict'] if 'scheduler_state_dict' in state else None
-
-        return {
-            'model': model, 'epoch': epoch, 'loss': loss,
-            'optimizer_state_dict': optimizer_state_dict, 'scheduler_state_dict': scheduler_state_dict
-        }
-
-    @classmethod
-    def _load_state(cls, model_file: Union[str, Path]):
-        # ATTENTION: suppressing torch serialization warnings. This needs to be taken out once we sort out recursive
-        # serialization of torch objects
-        # https://docs.python.org/3/library/warnings.html#temporarily-suppressing-warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
-            # load_big_file is a workaround by https://github.com/highway11git to load models on some Mac/Windows setups
-            # see https://github.com/zalandoresearch/flair/issues/351
-            f = flair.file_utils.load_big_file(str(model_file))
-            state = torch.load(f, map_location=flair.device)
-            return state
 
     def forward_loss(self, sentences: Union[List[Sentence], Sentence], sort=True) -> torch.tensor:
         features, lengths, tags = self.forward(sentences, sort=sort)
@@ -329,7 +284,6 @@ class SequenceTagger(flair.nn.Model):
                                       dtype=torch.float, device=flair.device)
 
         for s_id, sentence in enumerate(sentences):
-
             # fill values with word embeddings
             sentence_tensor[s_id][:len(sentence)] = torch.cat([token.get_embedding().unsqueeze(0)
                                                                for token in sentence], 0)
@@ -453,7 +407,6 @@ class SequenceTagger(flair.nn.Model):
         init_vvars[0][self.tag_dictionary.get_idx_for_item(START_TAG)] = 0
         forward_var = init_vvars
 
-
         for feat in feats:
             next_tag_var = forward_var.view(1, -1).expand(self.tagset_size, self.tagset_size) + self.transitions
             _, bptrs_t = torch.max(next_tag_var, dim=1)
@@ -541,135 +494,85 @@ class SequenceTagger(flair.nn.Model):
             log.warning('Ignore {} sentence(s) with no tokens.'.format(len(sentences) - len(filtered_sentences)))
         return filtered_sentences
 
-    @staticmethod
-    def load(model: str):
-        model_file = None
+    def _fetch_model(model_name) -> str:
+
+        model_map = {}
         aws_resource_path = 'https://s3.eu-central-1.amazonaws.com/alan-nlp/resources/models-v0.2'
         aws_resource_path_v04 = 'https://s3.eu-central-1.amazonaws.com/alan-nlp/resources/models-v0.4'
-        cache_dir = Path('models')
 
-        if model.lower() == 'ner-multi' or model.lower() == 'multi-ner':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'release-quadner-512-l2-multi-embed',
-                                  'quadner-large.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['ner'] = '/'.join([aws_resource_path_v04, 'NER-conll03-english', 'en-ner-conll03-v0.4.pt'])
 
-        if model.lower() == 'ner-multi-fast' or model.lower() == 'multi-ner-fast':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'NER-multi-fast',
-                                  'ner-multi-fast.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['ner-fast'] = '/'.join(
+            [aws_resource_path, 'NER-conll03--h256-l1-b32-experimental--fast-v0.2', 'en-ner-fast-conll03-v0.2.pt'])
 
-        if model.lower() == 'ner-multi-fast-learn' or model.lower() == 'multi-ner-fast-learn':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'NER-multi-fast-evolve',
-                                  'ner-multi-fast-learn.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['ner-ontonotes'] = '/'.join([aws_resource_path,
+                                               'NER-ontoner--h256-l1-b32-%2Bcrawl%2Bnews-forward%2Bnews-backward--v0.2',
+                                               'en-ner-ontonotes-v0.3.pt'])
 
-        if model.lower() == 'ner':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'NER-conll03-english',
-                                  'en-ner-conll03-v0.4.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['ner-ontonotes-fast'] = '/'.join([aws_resource_path,
+                                                    'NER-ontoner--h256-l1-b32-%2Bcrawl%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
+                                                    'en-ner-ontonotes-fast-v0.3.pt'])
 
-        elif model.lower() == 'ner-fast':
-            base_path = '/'.join([aws_resource_path,
-                                  'NER-conll03--h256-l1-b32-experimental--fast-v0.2',
-                                  'en-ner-fast-conll03-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        for key in ['ner-multi', 'multi-ner']:
+            model_map[key] = '/'.join([aws_resource_path_v04, 'release-quadner-512-l2-multi-embed', 'quadner-large.pt'])
 
-        elif model.lower() == 'ner-ontonotes':
-            base_path = '/'.join([aws_resource_path,
-                                  'NER-ontoner--h256-l1-b32-%2Bcrawl%2Bnews-forward%2Bnews-backward--v0.2',
-                                  'en-ner-ontonotes-v0.3.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        for key in ['ner-multi-fast', 'multi-ner-fast']:
+            model_map[key] = '/'.join([aws_resource_path_v04, 'NER-multi-fast', 'ner-multi-fast.pt'])
 
-        elif model.lower() == 'ner-ontonotes-fast':
-            base_path = '/'.join([aws_resource_path,
-                                  'NER-ontoner--h256-l1-b32-%2Bcrawl%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
-                                  'en-ner-ontonotes-fast-v0.3.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        for key in ['ner-multi-fast-learn', 'multi-ner-fast-learn']:
+            model_map[key] = '/'.join([aws_resource_path_v04, 'NER-multi-fast-evolve', 'ner-multi-fast-learn.pt'])
 
-        elif model.lower() == 'pos-multi' or model.lower() == 'multi-pos':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'release-dodekapos-512-l2-multi',
-                                  'pos-multi-v0.1.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['pos'] = '/'.join([aws_resource_path,
+                                     'POS-ontonotes--h256-l1-b32-%2Bmix-forward%2Bmix-backward--v0.2',
+                                     'en-pos-ontonotes-v0.2.pt'])
 
-        elif model.lower() == 'pos-multi-fast' or model.lower() == 'multi-pos-fast':
-            base_path = '/'.join([aws_resource_path_v04,
-                                  'UPOS-multi-fast',
-                                  'pos-multi-fast.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
-
-        elif model.lower() == 'pos':
-            base_path = '/'.join([aws_resource_path,
-                                  'POS-ontonotes--h256-l1-b32-%2Bmix-forward%2Bmix-backward--v0.2',
-                                  'en-pos-ontonotes-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
-
-        elif model.lower() == 'pos-fast':
-            base_path = '/'.join([aws_resource_path,
+        model_map['pos-fast'] = '/'.join([aws_resource_path,
                                   'POS-ontonotes--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
                                   'en-pos-ontonotes-fast-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'frame':
-            base_path = '/'.join([aws_resource_path,
+        for key in ['pos-multi', 'multi-pos']:
+            model_map[key] = '/'.join([aws_resource_path_v04, 'release-dodekapos-512-l2-multi', 'pos-multi-v0.1.pt'])
+
+        for key in ['pos-multi-fast', 'multi-pos-fast']:
+            model_map[key] = '/'.join([aws_resource_path_v04, 'UPOS-multi-fast', 'pos-multi-fast.pt'])
+
+        model_map['frame'] = '/'.join([aws_resource_path,
                                   'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward%2Bnews-backward--v0.2',
                                   'en-frame-ontonotes-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'frame-fast':
-            base_path = '/'.join([aws_resource_path,
+        model_map['frame-fast'] = '/'.join([aws_resource_path,
                                   'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
                                   'en-frame-ontonotes-fast-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'chunk':
-            base_path = '/'.join([aws_resource_path,
+        model_map['chunk'] = '/'.join([aws_resource_path,
                                   'NP-conll2000--h256-l1-b32-%2Bnews-forward%2Bnews-backward--v0.2',
                                   'en-chunk-conll2000-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'chunk-fast':
-            base_path = '/'.join([aws_resource_path,
+        model_map['chunk-fast'] = '/'.join([aws_resource_path,
                                   'NP-conll2000--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
                                   'en-chunk-conll2000-fast-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'de-pos':
-            base_path = '/'.join([aws_resource_path,
+        model_map['de-pos'] = '/'.join([aws_resource_path,
                                   'UPOS-udgerman--h256-l1-b8-%2Bgerman-forward%2Bgerman-backward--v0.2',
                                   'de-pos-ud-v0.2.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'de-pos-fine-grained':
-            base_path = '/'.join([aws_resource_path_v04,
+        model_map['de-pos-fine-grained'] = '/'.join([aws_resource_path_v04,
                                   'POS-fine-grained-german-tweets',
                                   'de-pos-twitter-v0.1.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'de-ner':
-            base_path = '/'.join([aws_resource_path,
+        model_map['de-ner'] = '/'.join([aws_resource_path,
                                   'NER-conll03ger--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
                                   'de-ner-conll03-v0.3.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'de-ner-germeval':
-            base_path = '/'.join([aws_resource_path,
+        model_map['de-ner-germeval'] = '/'.join([aws_resource_path,
                                   'NER-germeval--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
                                   'de-ner-germeval-v0.3.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
 
-        elif model.lower() == 'fr-ner':
-            base_path = '/'.join([aws_resource_path, 'NER-aij-wikiner-fr-wp3', 'fr-ner.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        model_map['fr-ner'] = '/'.join([aws_resource_path, 'NER-aij-wikiner-fr-wp3', 'fr-ner.pt'])
+        model_map['nl-ner'] = '/'.join([aws_resource_path_v04, 'NER-conll2002-dutch', 'nl-ner-conll02-v0.1.pt'])
 
-        elif model.lower() == 'nl-ner':
-            base_path = '/'.join([aws_resource_path_v04, 'NER-conll2002-dutch', 'nl-ner-conll02-v0.1.pt'])
-            model_file = cached_path(base_path, cache_dir=cache_dir)
+        cache_dir = Path('models')
+        if model_name in model_map:
+            model_name = cached_path(model_map[model_name], cache_dir=cache_dir)
 
-        if model_file is not None:
-            tagger: SequenceTagger = SequenceTagger.load_from_file(model_file)
-            return tagger
+        return model_name

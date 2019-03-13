@@ -1,9 +1,13 @@
+import warnings
+from pathlib import Path
+
 import torch.nn
 
 from abc import abstractmethod
 
 from typing import Union, List
 
+import flair
 from flair.data import Sentence, Label
 
 
@@ -25,6 +29,91 @@ class Model(torch.nn.Module):
         """Predicts the labels/tags for the given list of sentences. The labels/tags are added directly to the
         sentences."""
         pass
+
+    @abstractmethod
+    def _get_state_dict(self):
+        pass
+
+    @abstractmethod
+    def _init_model_with_state_dict(state):
+        pass
+
+    @abstractmethod
+    def _fetch_model(model_name) -> str:
+        return model_name
+
+    def save(self, model_file: Union[str, Path]):
+        """
+        Saves the current model to the provided file.
+        :param model_file: the model file
+        """
+        model_state = self._get_state_dict()
+
+        torch.save(model_state, str(model_file), pickle_protocol=4)
+
+    def save_checkpoint(self, model_file: Union[str, Path], optimizer_state: dict, scheduler_state: dict, epoch: int,
+                        loss: float):
+
+        model_state = self._get_state_dict()
+
+        # additional fields for model checkpointing
+        model_state['optimizer_state_dict'] = optimizer_state
+        model_state['scheduler_state_dict'] = scheduler_state
+        model_state['epoch'] = epoch
+        model_state['loss'] = loss
+
+        torch.save(model_state, str(model_file), pickle_protocol=4)
+
+    @classmethod
+    def load(cls, model: Union[str, Path]):
+        """
+        Loads the model from the given file.
+        :param model_file: the model file
+        :return: the loaded text classifier model
+        """
+        model_file = cls._fetch_model(str(model))
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            # load_big_file is a workaround by https://github.com/highway11git to load models on some Mac/Windows setups
+            # see https://github.com/zalandoresearch/flair/issues/351
+            f = flair.file_utils.load_big_file(str(model_file))
+            state = torch.load(f, map_location=flair.device)
+
+        model = cls._init_model_with_state_dict(state)
+
+        model.eval()
+        model.to(flair.device)
+
+        return model
+
+    @classmethod
+    def load_checkpoint(cls, chcekpoint_file: Union[str, Path]):
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            # load_big_file is a workaround by https://github.com/highway11git to load models on some Mac/Windows setups
+            # see https://github.com/zalandoresearch/flair/issues/351
+            f = flair.file_utils.load_big_file(str(chcekpoint_file))
+            state = torch.load(f, map_location=flair.device)
+
+        model = cls._init_model_with_state_dict(state)
+
+        model.eval()
+        model.to(flair.device)
+
+        epoch = state['epoch'] if 'epoch' in state else None
+        loss = state['loss'] if 'loss' in state else None
+        optimizer_state_dict = state['optimizer_state_dict'] if 'optimizer_state_dict' in state else None
+        scheduler_state_dict = state['scheduler_state_dict'] if 'scheduler_state_dict' in state else None
+
+        return {
+            'model': model,
+            'epoch': epoch,
+            'loss': loss,
+            'optimizer_state_dict': optimizer_state_dict,
+            'scheduler_state_dict': scheduler_state_dict
+        }
 
 
 class LockedDropout(torch.nn.Module):
