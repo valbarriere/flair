@@ -269,10 +269,7 @@ class ModelTrainer:
         self.model.eval()
 
         if (base_path / 'best-model.pt').exists():
-            if isinstance(self.model, TextClassifier):
-                self.model = TextClassifier.load(base_path / 'best-model.pt')
-            if isinstance(self.model, SequenceTagger):
-                self.model = SequenceTagger.load(base_path / 'best-model.pt')
+            self.model = TextClassifier.load(base_path / 'best-model.pt')
 
         test_metric, test_loss = self.evaluate(self.model, self.corpus.test, eval_mini_batch_size=eval_mini_batch_size,
                                                embeddings_in_memory=embeddings_in_memory)
@@ -472,7 +469,6 @@ class ModelTrainer:
                 metric.add_fn(label)
             elif label not in predictions and label not in true_values:
                 metric.add_tn(label)
-
 
     @staticmethod
     def load_from_checkpoint(checkpoint_file: Path, model_type: str, corpus: Corpus, optimizer: Optimizer = SGD):
