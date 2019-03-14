@@ -205,7 +205,10 @@ class SequenceTagger(flair.nn.Model):
             for batch in batches:
                 batch_no += 1
 
-                tags, loss = self.forward_labels_and_loss(batch)
+                with torch.no_grad():
+                    feature, lengths, tags = self.forward(sentences, sort=True)
+                    loss = self._calculate_loss(feature, lengths, tags)
+                    tags = self._obtain_labels(feature, lengths)
 
                 eval_loss += loss
 
@@ -253,13 +256,13 @@ class SequenceTagger(flair.nn.Model):
         features, lengths, tags = self.forward(sentences, sort=sort)
         return self._calculate_loss(features, lengths, tags)
 
-    def forward_labels_and_loss(self, sentences: Union[List[Sentence], Sentence],
-                                sort=True) -> (List[List[Label]], torch.tensor):
-        with torch.no_grad():
-            feature, lengths, tags = self.forward(sentences, sort=sort)
-            loss = self._calculate_loss(feature, lengths, tags)
-            tags = self._obtain_labels(feature, lengths)
-            return tags, loss
+    # def forward_labels_and_loss(self, sentences: Union[List[Sentence], Sentence],
+    #                             sort=True) -> (List[List[Label]], torch.tensor):
+    #     with torch.no_grad():
+    #         feature, lengths, tags = self.forward(sentences, sort=sort)
+    #         loss = self._calculate_loss(feature, lengths, tags)
+    #         tags = self._obtain_labels(feature, lengths)
+    #         return tags, loss
 
     def predict(self, sentences: Union[List[Sentence], Sentence],
                 mini_batch_size=32, verbose=False) -> List[Sentence]:
@@ -288,7 +291,9 @@ class SequenceTagger(flair.nn.Model):
                 if verbose:
                     batches.set_description(f'Inferencing on batch {i}')
 
-                tags, _ = self.forward_labels_and_loss(batch, sort=False)
+                with torch.no_grad():
+                    feature, lengths, tags = self.forward(sentences, sort=False)
+                    tags = self._obtain_labels(feature, lengths)
 
                 for (sentence, sent_tags) in zip(batch, tags):
                     for (token, tag) in zip(sentence.tokens, sent_tags):

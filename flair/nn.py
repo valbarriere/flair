@@ -20,11 +20,6 @@ class Model(torch.nn.Module):
         pass
 
     @abstractmethod
-    def forward_labels_and_loss(self, sentences: Union[List[Sentence], Sentence]) -> (List[List[Label]], torch.tensor):
-        """Predicts the labels/tags for the given list of sentences. Returns the list of labels plus the loss."""
-        pass
-
-    @abstractmethod
     def predict(self, sentences: Union[List[Sentence], Sentence], mini_batch_size=32) -> List[Sentence]:
         """Predicts the labels/tags for the given list of sentences. The labels/tags are added directly to the
         sentences."""
