@@ -256,14 +256,6 @@ class SequenceTagger(flair.nn.Model):
         features, lengths, tags = self.forward(sentences, sort=sort)
         return self._calculate_loss(features, lengths, tags)
 
-    # def forward_labels_and_loss(self, sentences: Union[List[Sentence], Sentence],
-    #                             sort=True) -> (List[List[Label]], torch.tensor):
-    #     with torch.no_grad():
-    #         feature, lengths, tags = self.forward(sentences, sort=sort)
-    #         loss = self._calculate_loss(feature, lengths, tags)
-    #         tags = self._obtain_labels(feature, lengths)
-    #         return tags, loss
-
     def predict(self, sentences: Union[List[Sentence], Sentence],
                 mini_batch_size=32, verbose=False) -> List[Sentence]:
         with torch.no_grad():
