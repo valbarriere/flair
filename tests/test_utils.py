@@ -17,20 +17,20 @@ def test_metric_get_classes():
     assert('class-3' in metric.get_classes())
 
 
-def test_multiclass_metrics():
-
-    metric = Metric('Test')
-    available_labels = ['A', 'B', 'C']
-
-    predictions = ['A', 'B']
-    true_values = ['A']
-    ModelTrainer._evaluate_sentence_for_text_classification(metric, available_labels, predictions, true_values)
-
-    predictions = ['C', 'B']
-    true_values = ['A', 'B']
-    ModelTrainer._evaluate_sentence_for_text_classification(metric, available_labels, predictions, true_values)
-
-    print(metric)
+# def test_multiclass_metrics():
+#
+#     metric = Metric('Test')
+#     available_labels = ['A', 'B', 'C']
+#
+#     predictions = ['A', 'B']
+#     true_values = ['A']
+#     ModelTrainer._evaluate_sentence_for_text_classification(metric, available_labels, predictions, true_values)
+#
+#     predictions = ['C', 'B']
+#     true_values = ['A', 'B']
+#     ModelTrainer._evaluate_sentence_for_text_classification(metric, available_labels, predictions, true_values)
+#
+#     print(metric)
 
 
 def test_metric_with_classes():
