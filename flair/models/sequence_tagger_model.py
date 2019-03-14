@@ -15,7 +15,7 @@ from flair.file_utils import cached_path
 
 from typing import List, Tuple, Union
 
-from flair.training_utils import clear_embeddings
+from flair.training_utils import clear_embeddings, Metric
 
 from tqdm import tqdm
 
@@ -187,31 +187,67 @@ class SequenceTagger(flair.nn.Model):
         model.load_state_dict(state['state_dict'])
         return model
 
-    @classmethod
-    def load_from_file(cls, model_file: Union[str, Path]):
-        state = SequenceTagger._load_state(model_file)
+    def evaluate(self,
+                 sentences: List[Sentence],
+                 eval_mini_batch_size: int = 32,
+                 embeddings_in_memory: bool = True,
+                 out_path: Path = None) -> (dict, float):
 
-        use_dropout = 0.0 if not 'use_dropout' in state.keys() else state['use_dropout']
-        use_word_dropout = 0.0 if not 'use_word_dropout' in state.keys() else state['use_word_dropout']
-        use_locked_dropout = 0.0 if not 'use_locked_dropout' in state.keys() else state['use_locked_dropout']
+        with torch.no_grad():
+            eval_loss = 0
 
-        model = SequenceTagger(
-            hidden_size=state['hidden_size'],
-            embeddings=state['embeddings'],
-            tag_dictionary=state['tag_dictionary'],
-            tag_type=state['tag_type'],
-            use_crf=state['use_crf'],
-            use_rnn=state['use_rnn'],
-            rnn_layers=state['rnn_layers'],
-            dropout=use_dropout,
-            word_dropout=use_word_dropout,
-            locked_dropout=use_locked_dropout,
-        )
-        model.load_state_dict(state['state_dict'])
-        model.eval()
-        model.to(flair.device)
+            batch_no: int = 0
+            batches = [sentences[x:x + eval_mini_batch_size] for x in range(0, len(sentences), eval_mini_batch_size)]
 
-        return model
+            metric = Metric('Evaluation')
+
+            lines: List[str] = []
+            for batch in batches:
+                batch_no += 1
+
+                tags, loss = self.forward_labels_and_loss(batch)
+
+                eval_loss += loss
+
+                for (sentence, sent_tags) in zip(batch, tags):
+                    for (token, tag) in zip(sentence.tokens, sent_tags):
+                        token: Token = token
+                        token.add_tag_label('predicted', tag)
+
+                        # append both to file for evaluation
+                        eval_line = '{} {} {} {}\n'.format(token.text,
+                                                           token.get_tag(self.tag_type).value, tag.value,
+                                                           tag.score)
+                        lines.append(eval_line)
+                    lines.append('\n')
+                for sentence in batch:
+                    # make list of gold tags
+                    gold_tags = [(tag.tag, str(tag)) for tag in sentence.get_spans(self.tag_type)]
+                    # make list of predicted tags
+                    predicted_tags = [(tag.tag, str(tag)) for tag in sentence.get_spans('predicted')]
+
+                    # check for true positives, false positives and false negatives
+                    for tag, prediction in predicted_tags:
+                        if (tag, prediction) in gold_tags:
+                            metric.add_tp(tag)
+                        else:
+                            metric.add_fp(tag)
+
+                    for tag, gold in gold_tags:
+                        if (tag, gold) not in predicted_tags:
+                            metric.add_fn(tag)
+                        else:
+                            metric.add_tn(tag)
+
+                clear_embeddings(batch, also_clear_word_embeddings=not embeddings_in_memory)
+
+            eval_loss /= len(sentences)
+
+            if out_path is not None:
+                with open(out_path, "w", encoding='utf-8') as outfile:
+                    outfile.write(''.join(lines))
+
+            return metric, eval_loss
 
     def forward_loss(self, sentences: Union[List[Sentence], Sentence], sort=True) -> torch.tensor:
         features, lengths, tags = self.forward(sentences, sort=sort)
@@ -527,8 +563,8 @@ class SequenceTagger(flair.nn.Model):
                                      'en-pos-ontonotes-v0.2.pt'])
 
         model_map['pos-fast'] = '/'.join([aws_resource_path,
-                                  'POS-ontonotes--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
-                                  'en-pos-ontonotes-fast-v0.2.pt'])
+                                          'POS-ontonotes--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
+                                          'en-pos-ontonotes-fast-v0.2.pt'])
 
         for key in ['pos-multi', 'multi-pos']:
             model_map[key] = '/'.join([aws_resource_path_v04, 'release-dodekapos-512-l2-multi', 'pos-multi-v0.1.pt'])
@@ -537,36 +573,36 @@ class SequenceTagger(flair.nn.Model):
             model_map[key] = '/'.join([aws_resource_path_v04, 'UPOS-multi-fast', 'pos-multi-fast.pt'])
 
         model_map['frame'] = '/'.join([aws_resource_path,
-                                  'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward%2Bnews-backward--v0.2',
-                                  'en-frame-ontonotes-v0.2.pt'])
+                                       'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward%2Bnews-backward--v0.2',
+                                       'en-frame-ontonotes-v0.2.pt'])
 
         model_map['frame-fast'] = '/'.join([aws_resource_path,
-                                  'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
-                                  'en-frame-ontonotes-fast-v0.2.pt'])
+                                            'FRAME-conll12--h256-l1-b8-%2Bnews%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
+                                            'en-frame-ontonotes-fast-v0.2.pt'])
 
         model_map['chunk'] = '/'.join([aws_resource_path,
-                                  'NP-conll2000--h256-l1-b32-%2Bnews-forward%2Bnews-backward--v0.2',
-                                  'en-chunk-conll2000-v0.2.pt'])
+                                       'NP-conll2000--h256-l1-b32-%2Bnews-forward%2Bnews-backward--v0.2',
+                                       'en-chunk-conll2000-v0.2.pt'])
 
         model_map['chunk-fast'] = '/'.join([aws_resource_path,
-                                  'NP-conll2000--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
-                                  'en-chunk-conll2000-fast-v0.2.pt'])
+                                            'NP-conll2000--h256-l1-b32-%2Bnews-forward-fast%2Bnews-backward-fast--v0.2',
+                                            'en-chunk-conll2000-fast-v0.2.pt'])
 
         model_map['de-pos'] = '/'.join([aws_resource_path,
-                                  'UPOS-udgerman--h256-l1-b8-%2Bgerman-forward%2Bgerman-backward--v0.2',
-                                  'de-pos-ud-v0.2.pt'])
+                                        'UPOS-udgerman--h256-l1-b8-%2Bgerman-forward%2Bgerman-backward--v0.2',
+                                        'de-pos-ud-v0.2.pt'])
 
         model_map['de-pos-fine-grained'] = '/'.join([aws_resource_path_v04,
-                                  'POS-fine-grained-german-tweets',
-                                  'de-pos-twitter-v0.1.pt'])
+                                                     'POS-fine-grained-german-tweets',
+                                                     'de-pos-twitter-v0.1.pt'])
 
         model_map['de-ner'] = '/'.join([aws_resource_path,
-                                  'NER-conll03ger--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
-                                  'de-ner-conll03-v0.3.pt'])
+                                        'NER-conll03ger--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
+                                        'de-ner-conll03-v0.3.pt'])
 
         model_map['de-ner-germeval'] = '/'.join([aws_resource_path,
-                                  'NER-germeval--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
-                                  'de-ner-germeval-v0.3.pt'])
+                                                 'NER-germeval--h256-l1-b32-%2Bde-fasttext%2Bgerman-forward%2Bgerman-backward--v0.2',
+                                                 'de-ner-germeval-v0.3.pt'])
 
         model_map['fr-ner'] = '/'.join([aws_resource_path, 'NER-aij-wikiner-fr-wp3', 'fr-ner.pt'])
         model_map['nl-ner'] = '/'.join([aws_resource_path_v04, 'NER-conll2002-dutch', 'nl-ner-conll02-v0.1.pt'])

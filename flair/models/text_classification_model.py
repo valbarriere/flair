@@ -10,8 +10,7 @@ import flair.nn
 import flair.embeddings
 from flair.data import Dictionary, Sentence, Label
 from flair.file_utils import cached_path
-from flair.training_utils import convert_labels_to_one_hot, clear_embeddings
-
+from flair.training_utils import convert_labels_to_one_hot, clear_embeddings, Metric
 
 log = logging.getLogger('flair')
 
@@ -105,7 +104,8 @@ class TextClassifier(flair.nn.Model):
 
             filtered_sentences = self._filter_empty_sentences(sentences)
 
-            batches = [filtered_sentences[x:x + mini_batch_size] for x in range(0, len(filtered_sentences), mini_batch_size)]
+            batches = [filtered_sentences[x:x + mini_batch_size] for x in
+                       range(0, len(filtered_sentences), mini_batch_size)]
 
             for batch in batches:
                 scores = self.forward(batch)
@@ -117,6 +117,62 @@ class TextClassifier(flair.nn.Model):
                 clear_embeddings(batch)
 
             return sentences
+
+    def evaluate(self,
+                 sentences: List[Sentence],
+                 eval_mini_batch_size: int = 32,
+                 embeddings_in_memory: bool = False,
+                 out_path: Path = None) -> (dict, float):
+
+        with torch.no_grad():
+            eval_loss = 0
+
+            batches = [sentences[x:x + eval_mini_batch_size] for x in
+                       range(0, len(sentences), eval_mini_batch_size)]
+
+            metric = Metric('Evaluation')
+
+            lines: List[str] = []
+            for batch in batches:
+
+                labels, loss = self.forward_labels_and_loss(batch)
+
+                clear_embeddings(batch, also_clear_word_embeddings=not embeddings_in_memory)
+
+                eval_loss += loss
+
+                sentences_for_batch = [sent.to_plain_string() for sent in batch]
+                confidences_for_batch = [[label.score for label in sent_labels] for sent_labels in labels]
+                predictions_for_batch = [[label.value for label in sent_labels] for sent_labels in labels]
+                true_values_for_batch = [sentence.get_label_names() for sentence in batch]
+                available_labels = self.label_dictionary.get_items()
+
+                for sentence, confidence, prediction, true_value in zip(sentences_for_batch, confidences_for_batch,
+                                                                        predictions_for_batch,
+                                                                        true_values_for_batch):
+                    eval_line = '{}\t{}\t{}\t{}\n'.format(sentence, true_value, prediction, confidence)
+                    lines.append(eval_line)
+
+                for predictions_for_sentence, true_values_for_sentence in zip(predictions_for_batch,
+                                                                              true_values_for_batch):
+
+                    for label in available_labels:
+                        if label in predictions_for_sentence and label in true_values_for_sentence:
+                            metric.add_tp(label)
+                        elif label in predictions_for_sentence and label not in true_values_for_sentence:
+                            metric.add_fp(label)
+                        elif label not in predictions_for_sentence and label in true_values_for_sentence:
+                            metric.add_fn(label)
+                        elif label not in predictions_for_sentence and label not in true_values_for_sentence:
+                            metric.add_tn(label)
+
+            eval_loss /= len(sentences)
+
+            if out_path is not None:
+                with open(out_path, "w", encoding='utf-8') as outfile:
+                    outfile.write(''.join(lines))
+
+            return metric, eval_loss
 
     @staticmethod
     def _filter_empty_sentences(sentences: List[Sentence]) -> List[Sentence]:
@@ -198,7 +254,7 @@ class TextClassifier(flair.nn.Model):
         aws_resource_path = 'https://s3.eu-central-1.amazonaws.com/alan-nlp/resources/models-v0.4'
 
         model_map['de-offensive-language'] = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_germ-eval-2018_task-1',
-                                  'germ-eval-2018-task-1.pt'])
+                                                       'germ-eval-2018-task-1.pt'])
 
         model_map['en-sentiment'] = '/'.join([aws_resource_path, 'TEXT-CLASSIFICATION_imdb', 'imdb.pt'])
 

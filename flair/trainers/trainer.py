@@ -8,12 +8,10 @@ from torch.optim.sgd import SGD
 
 import flair
 import flair.nn
-from flair.data import Sentence, Token, MultiCorpus, Corpus
-from flair.models import TextClassifier, SequenceTagger
+from flair.data import Sentence, MultiCorpus, Corpus
 from flair.training_utils import Metric, init_output_file, WeightExtractor, clear_embeddings, EvaluationMetric, \
     log_line, add_file_handler
 from flair.optim import *
-
 
 log = logging.getLogger('flair')
 
@@ -24,7 +22,7 @@ class ModelTrainer:
                  model: flair.nn.Model,
                  corpus: Corpus,
                  optimizer: Optimizer = SGD,
-                 epoch:int = 0,
+                 epoch: int = 0,
                  loss: float = 10000.0,
                  optimizer_state: dict = None,
                  scheduler_state: dict = None
@@ -74,7 +72,8 @@ class ModelTrainer:
             loss_txt = init_output_file(base_path, 'loss.tsv')
             with open(loss_txt, 'a') as f:
                 f.write(
-                    f'EPOCH\tTIMESTAMP\tBAD_EPOCHS\tLEARNING_RATE\tTRAIN_LOSS\t{Metric.tsv_header("TRAIN")}\tDEV_LOSS\t{Metric.tsv_header("DEV")}'
+                    f'EPOCH\tTIMESTAMP\tBAD_EPOCHS\tLEARNING_RATE\t' +
+                    f'TRAIN_LOSS\t{Metric.tsv_header("TRAIN")}\tDEV_LOSS\t{Metric.tsv_header("DEV")}' +
                     f'\tTEST_LOSS\t{Metric.tsv_header("TEST")}\n')
 
             weight_extractor = WeightExtractor(base_path)
@@ -171,7 +170,8 @@ class ModelTrainer:
                 self.model.eval()
 
                 log_line(log)
-                log.info(f'EPOCH {epoch + 1} done: loss {train_loss:.4f} - lr {learning_rate:.4f} - bad epochs {bad_epochs}')
+                log.info(
+                    f'EPOCH {epoch + 1} done: loss {train_loss:.4f} - lr {learning_rate:.4f} - bad epochs {bad_epochs}')
 
                 dev_metric = None
                 dev_loss = '_'
@@ -234,7 +234,7 @@ class ModelTrainer:
                     self.model.save(base_path / 'best-model.pt')
 
             # if we do not use dev data for model selection, save final model
-            if save_final_model and not param_selection_mode :
+            if save_final_model and not param_selection_mode:
                 self.model.save(base_path / 'final-model.pt')
 
         except KeyboardInterrupt:
@@ -269,10 +269,10 @@ class ModelTrainer:
         self.model.eval()
 
         if (base_path / 'best-model.pt').exists():
-            self.model = TextClassifier.load(base_path / 'best-model.pt')
+            self.model = self.model.load(base_path / 'best-model.pt')
 
-        test_metric, test_loss = self.evaluate(self.model, self.corpus.test, eval_mini_batch_size=eval_mini_batch_size,
-                                               embeddings_in_memory=embeddings_in_memory)
+        test_metric, test_loss = self.model.evaluate(self.corpus.test, eval_mini_batch_size=eval_mini_batch_size,
+                                                     embeddings_in_memory=embeddings_in_memory)
 
         log.info(f'MICRO_AVG: acc {test_metric.micro_avg_accuracy()} - f1-score {test_metric.micro_avg_f_score()}')
         log.info(f'MACRO_AVG: acc {test_metric.macro_avg_accuracy()} - f1-score {test_metric.macro_avg_f_score()}')
@@ -315,8 +315,8 @@ class ModelTrainer:
                                           eval_mini_batch_size: int,
                                           out_path: Path = None):
 
-        metric, loss = ModelTrainer.evaluate(self.model, dataset, eval_mini_batch_size=eval_mini_batch_size,
-                                             embeddings_in_memory=embeddings_in_memory, out_path=out_path)
+        metric, loss = self.model.evaluate(dataset, eval_mini_batch_size=eval_mini_batch_size,
+                                           embeddings_in_memory=embeddings_in_memory, out_path=out_path)
 
         if evaluation_metric == EvaluationMetric.MACRO_ACCURACY or evaluation_metric == EvaluationMetric.MACRO_F1_SCORE:
             f_score = metric.macro_avg_f_score()
@@ -329,150 +329,8 @@ class ModelTrainer:
 
         return metric, loss
 
-    @staticmethod
-    def evaluate(model: flair.nn.Model, data_set: List[Sentence],
-                 eval_mini_batch_size: int = 32,
-                 embeddings_in_memory: bool = True,
-                 out_path: Path = None) -> (
-            dict, float):
-        if isinstance(model, TextClassifier):
-            return ModelTrainer._evaluate_text_classifier(model, data_set, eval_mini_batch_size, embeddings_in_memory,
-                                                          out_path)
-        elif isinstance(model, SequenceTagger):
-            return ModelTrainer._evaluate_sequence_tagger(model, data_set, eval_mini_batch_size, embeddings_in_memory,
-                                                          out_path)
-
-    @staticmethod
-    def _evaluate_sequence_tagger(model,
-                                  sentences: List[Sentence],
-                                  eval_mini_batch_size: int = 32,
-                                  embeddings_in_memory: bool = True,
-                                  out_path: Path = None) -> (dict, float):
-
-        with torch.no_grad():
-            eval_loss = 0
-
-            batch_no: int = 0
-            batches = [sentences[x:x + eval_mini_batch_size] for x in range(0, len(sentences), eval_mini_batch_size)]
-
-            metric = Metric('Evaluation')
-
-            lines: List[str] = []
-            for batch in batches:
-                batch_no += 1
-
-                tags, loss = model.forward_labels_and_loss(batch)
-
-                eval_loss += loss
-
-                for (sentence, sent_tags) in zip(batch, tags):
-                    for (token, tag) in zip(sentence.tokens, sent_tags):
-                        token: Token = token
-                        token.add_tag_label('predicted', tag)
-
-                        # append both to file for evaluation
-                        eval_line = '{} {} {} {}\n'.format(token.text,
-                                                           token.get_tag(model.tag_type).value, tag.value, tag.score)
-                        lines.append(eval_line)
-                    lines.append('\n')
-                for sentence in batch:
-                    # make list of gold tags
-                    gold_tags = [(tag.tag, str(tag)) for tag in sentence.get_spans(model.tag_type)]
-                    # make list of predicted tags
-                    predicted_tags = [(tag.tag, str(tag)) for tag in sentence.get_spans('predicted')]
-
-                    # check for true positives, false positives and false negatives
-                    for tag, prediction in predicted_tags:
-                        if (tag, prediction) in gold_tags:
-                            metric.add_tp(tag)
-                        else:
-                            metric.add_fp(tag)
-
-                    for tag, gold in gold_tags:
-                        if (tag, gold) not in predicted_tags:
-                            metric.add_fn(tag)
-                        else:
-                            metric.add_tn(tag)
-
-                clear_embeddings(batch, also_clear_word_embeddings=not embeddings_in_memory)
-
-            eval_loss /= len(sentences)
-
-            if out_path is not None:
-                with open(out_path, "w", encoding='utf-8') as outfile:
-                    outfile.write(''.join(lines))
-
-            return metric, eval_loss
-
-    @staticmethod
-    def _evaluate_text_classifier(model: flair.nn.Model,
-                                  sentences: List[Sentence],
-                                  eval_mini_batch_size: int = 32,
-                                  embeddings_in_memory: bool = False,
-                                  out_path: Path = None) -> (dict, float):
-
-        with torch.no_grad():
-            eval_loss = 0
-
-            batches = [sentences[x:x + eval_mini_batch_size] for x in
-                       range(0, len(sentences), eval_mini_batch_size)]
-
-            metric = Metric('Evaluation')
-
-            lines: List[str] = []
-            for batch in batches:
-
-                labels, loss = model.forward_labels_and_loss(batch)
-
-                clear_embeddings(batch, also_clear_word_embeddings=not embeddings_in_memory)
-
-                eval_loss += loss
-
-                sentences_for_batch = [sent.to_plain_string() for sent in batch]
-                confidences_for_batch = [[label.score for label in sent_labels] for sent_labels in labels]
-                predictions_for_batch = [[label.value for label in sent_labels] for sent_labels in labels]
-                true_values_for_batch = [sentence.get_label_names() for sentence in batch]
-                available_labels = model.label_dictionary.get_items()
-
-                for sentence, confidence, prediction, true_value in zip(sentences_for_batch, confidences_for_batch,
-                                                                        predictions_for_batch, true_values_for_batch):
-                    eval_line = '{}\t{}\t{}\t{}\n'.format(sentence, true_value, prediction, confidence)
-                    lines.append(eval_line)
-
-                for predictions_for_sentence, true_values_for_sentence in zip(predictions_for_batch, true_values_for_batch):
-                    ModelTrainer._evaluate_sentence_for_text_classification(metric,
-                                                                            available_labels,
-                                                                            predictions_for_sentence,
-                                                                            true_values_for_sentence)
-
-            eval_loss /= len(sentences)
-
-            if out_path is not None:
-                with open(out_path, "w", encoding='utf-8') as outfile:
-                    outfile.write(''.join(lines))
-
-            return metric, eval_loss
-
-
-    @staticmethod
-    def _evaluate_sentence_for_text_classification(metric: Metric,
-                                                   available_labels: List[str],
-                                                   predictions: List[str],
-                                                   true_values: List[str]):
-
-        for label in available_labels:
-            if label in predictions and label in true_values:
-                metric.add_tp(label)
-            elif label in predictions and label not in true_values:
-                metric.add_fp(label)
-            elif label not in predictions and label in true_values:
-                metric.add_fn(label)
-            elif label not in predictions and label not in true_values:
-                metric.add_tn(label)
-
-    @staticmethod
-    def load_from_checkpoint(checkpoint_file: Path, model_type: str, corpus: Corpus, optimizer: Optimizer = SGD):
-        checkpoint = SequenceTagger.load_checkpoint(checkpoint_file)
+    def load_from_checkpoint(self, checkpoint_file: Path, model_type: str, corpus: Corpus, optimizer: Optimizer = SGD):
+        checkpoint = self.model.load_checkpoint(checkpoint_file)
         return ModelTrainer(checkpoint['model'], corpus, optimizer, epoch=checkpoint['epoch'],
                             loss=checkpoint['loss'], optimizer_state=checkpoint['optimizer_state_dict'],
                             scheduler_state=checkpoint['scheduler_state_dict'])
@@ -527,7 +385,7 @@ class ModelTrainer:
             else:
                 if smoothing_factor > 0:
                     moving_avg_loss = smoothing_factor * moving_avg_loss + (1 - smoothing_factor) * loss_item
-                    loss_item = moving_avg_loss / (1 - smoothing_factor ** (itr+1))
+                    loss_item = moving_avg_loss / (1 - smoothing_factor ** (itr + 1))
                 if loss_item < best_loss:
                     best_loss = loss
 

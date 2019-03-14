@@ -31,6 +31,14 @@ class Model(torch.nn.Module):
         pass
 
     @abstractmethod
+    def evaluate(self,
+                 sentences: List[Sentence],
+                 eval_mini_batch_size: int = 32,
+                 embeddings_in_memory: bool = False,
+                 out_path: Path = None) -> (dict, float):
+        pass
+
+    @abstractmethod
     def _get_state_dict(self):
         pass
 
@@ -53,7 +61,6 @@ class Model(torch.nn.Module):
 
     def save_checkpoint(self, model_file: Union[str, Path], optimizer_state: dict, scheduler_state: dict, epoch: int,
                         loss: float):
-
         model_state = self._get_state_dict()
 
         # additional fields for model checkpointing
@@ -89,7 +96,6 @@ class Model(torch.nn.Module):
 
     @classmethod
     def load_checkpoint(cls, chcekpoint_file: Union[str, Path]):
-
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
             # load_big_file is a workaround by https://github.com/highway11git to load models on some Mac/Windows setups
@@ -120,6 +126,7 @@ class LockedDropout(torch.nn.Module):
     """
     Implementation of locked (or variational) dropout. Randomly drops out entire parameters in embedding space.
     """
+
     def __init__(self, dropout_rate=0.5):
         super(LockedDropout, self).__init__()
         self.dropout_rate = dropout_rate
@@ -138,6 +145,7 @@ class WordDropout(torch.nn.Module):
     """
     Implementation of word dropout. Randomly drops out entire words (or characters) in embedding space.
     """
+
     def __init__(self, dropout_rate=0.05):
         super(WordDropout, self).__init__()
         self.dropout_rate = dropout_rate
