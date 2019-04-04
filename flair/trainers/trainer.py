@@ -55,6 +55,7 @@ class ModelTrainer:
               anneal_with_restarts: bool = False,
               test_mode: bool = False,
               param_selection_mode: bool = False,
+              sort_test: bool = True,
               **kwargs
               ) -> dict:
 
@@ -189,7 +190,7 @@ class ModelTrainer:
                 if not param_selection_mode and self.corpus.test:
                     test_metric, test_loss = self._calculate_evaluation_results_for(
                         'TEST', self.corpus.test, evaluation_metric, embeddings_in_memory, eval_mini_batch_size,
-                        base_path / 'test.tsv')
+                        base_path / 'test.tsv', sort_test)
 
                 if not param_selection_mode:
                     with open(loss_txt, 'a') as f:
@@ -316,10 +317,11 @@ class ModelTrainer:
                                           evaluation_metric: EvaluationMetric,
                                           embeddings_in_memory: bool,
                                           eval_mini_batch_size: int,
-                                          out_path: Path = None):
+                                          out_path: Path = None,
+                                          sort: bool = True):
 
         metric, loss = ModelTrainer.evaluate(self.model, dataset, eval_mini_batch_size=eval_mini_batch_size,
-                                             embeddings_in_memory=embeddings_in_memory, out_path=out_path)
+                                             embeddings_in_memory=embeddings_in_memory, out_path=out_path, sort=sort)
 
         if evaluation_metric == EvaluationMetric.MACRO_ACCURACY or evaluation_metric == EvaluationMetric.MACRO_F1_SCORE:
             f_score = metric.macro_avg_f_score()
@@ -336,21 +338,23 @@ class ModelTrainer:
     def evaluate(model: flair.nn.Model, data_set: List[Sentence],
                  eval_mini_batch_size: int = 32,
                  embeddings_in_memory: bool = True,
-                 out_path: Path = None) -> (
+                 out_path: Path = None,
+                 sort: bool = True) -> (
             dict, float):
         if isinstance(model, TextClassifier):
             return ModelTrainer._evaluate_text_classifier(model, data_set, eval_mini_batch_size, embeddings_in_memory,
                                                           out_path)
         elif isinstance(model, SequenceTagger):
             return ModelTrainer._evaluate_sequence_tagger(model, data_set, eval_mini_batch_size, embeddings_in_memory,
-                                                          out_path)
+                                                          out_path, sort)
 
     @staticmethod
     def _evaluate_sequence_tagger(model,
                                   sentences: List[Sentence],
                                   eval_mini_batch_size: int = 32,
                                   embeddings_in_memory: bool = True,
-                                  out_path: Path = None) -> (dict, float):
+                                  out_path: Path = None,
+                                  sort: bool = True) -> (dict, float):
 
         with torch.no_grad():
             eval_loss = 0
@@ -364,12 +368,13 @@ class ModelTrainer:
             for batch in batches:
                 batch_no += 1
 
-                tags, loss = model.forward_labels_and_loss(batch)
+                tags, loss = model.forward_labels_and_loss(batch, sort = sort)
 
                 eval_loss += loss
 
                 for (sentence, sent_tags) in zip(batch, tags):
                     for (token, tag) in zip(sentence.tokens, sent_tags):
+                        token: Token = token
                         token.add_tag_label('predicted', tag)
 
                         # append both to file for evaluation
